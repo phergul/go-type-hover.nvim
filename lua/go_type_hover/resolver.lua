@@ -1,5 +1,8 @@
 local M = {}
 
+---Normalizes an LSP location item
+---@param item table|nil The LSP location item
+---@return table|nil The normalized location
 local function normalize_location(item)
 	if not item then
 		return nil
@@ -22,6 +25,9 @@ local function normalize_location(item)
 	return nil
 end
 
+---Extracts the first location from an LSP result
+---@param result table|nil The LSP result
+---@return table|nil The first normalized location
 local function first_location(result)
 	if not result then
 		return nil
@@ -37,6 +43,11 @@ local function first_location(result)
 	return normalize_location(result)
 end
 
+---Resolves a specific LSP method
+---@param bufnr number The buffer number
+---@param params table The LSP parameters
+---@param method string The LSP method name
+---@param callback function The callback function
 local function resolve_method(bufnr, params, method, callback)
 	local clients = vim.lsp.get_clients({ bufnr = bufnr })
 	local pending = #clients
@@ -66,6 +77,10 @@ local function resolve_method(bufnr, params, method, callback)
 	end)
 end
 
+---Resolves the type definition for the given parameters using LSP
+---@param bufnr number The buffer number
+---@param params table The LSP parameters (textDocument, position)
+---@param callback function The callback function to receive the result
 function M.resolve(bufnr, params, callback)
 	resolve_method(bufnr, params, "textDocument/typeDefinition", function(location)
 		if location then
@@ -83,6 +98,9 @@ function M.resolve(bufnr, params, callback)
 	end)
 end
 
+---Normalizes the LSP location result
+---@param location table The LSP location object
+---@return table|nil The normalized result containing bufnr, start_line, and uri, or nil
 function M.normalize(location)
 	if not location or not location.uri then
 		return nil
@@ -95,21 +113,14 @@ function M.normalize(location)
 
 	local range = location.range
 	local start_line = 0
-	local end_line = 0
 
 	if range and range.start then
 		start_line = range.start.line or 0
-	end
-	if range and range["end"] then
-		end_line = range["end"].line or start_line
-	else
-		end_line = start_line
 	end
 
 	return {
 		bufnr = bufnr,
 		start_line = start_line,
-		end_line = end_line,
 		uri = location.uri,
 	}
 end

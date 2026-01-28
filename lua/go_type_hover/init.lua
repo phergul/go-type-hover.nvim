@@ -29,6 +29,9 @@ local default_config = {
 
 	-- identifiers to ignore
 	ignored = {},
+
+	-- whether to show documentation comments
+	show_docs = true,
 }
 
 local config = vim.deepcopy(default_config)
@@ -82,15 +85,24 @@ local ignore_list = {
 	["goto"] = true,
 }
 
+---Sends a notification message
+---@param message string The message to display
+---@param level number|nil The notification level (default: WARN)
 local function notify(message, level)
 	vim.notify(message, level or vim.log.levels.WARN)
 end
 
+---Checks if an LSP client is attached to the buffer
+---@param bufnr number The buffer number
+---@return boolean True if LSP is attached
 local function has_lsp(bufnr)
 	local clients = vim.lsp.get_clients({ bufnr = bufnr })
 	return clients and #clients > 0
 end
 
+---Checks if a symbol should be ignored
+---@param symbol string The symbol name
+---@return boolean True if the symbol should be ignored
 local function should_ignore(symbol)
 	if ignore_list[symbol] then
 		return true
@@ -103,17 +115,72 @@ local function should_ignore(symbol)
 	return false
 end
 
-local function select_symbol_in_line(line, col)
-	if not line or line == "" then
-		return nil
+---Finds a symbol in the given line near the specified column
+---@param bufnr number The buffer number
+---@param row number The 0-based row index
+---@param col number The 0-based column index
+---@return string|nil, number|nil The found symbol and its start column, or nil
+local function find_symbol(bufnr, row, col)
+	local candidates = {}
+	local used_ts = false
+
+	local parser_ok, parser = pcall(vim.treesitter.get_parser, bufnr, "go")
+	if parser_ok and parser then
+		local tree = parser:parse()[1]
+		if tree then
+			local root = tree:root()
+			local line_node = root:named_descendant_for_range(row, 0, row, -1)
+
+			if line_node then
+				local function traverse(node)
+					if not node then
+						return
+					end
+					local s_row, s_col, e_row, e_col = node:range()
+					if s_row > row or e_row < row then
+						return
+					end
+
+					local type = node:type()
+					if type == "type_identifier" or type == "package_identifier" then
+						local text = vim.treesitter.get_node_text(node, bufnr)
+						if not should_ignore(text) then
+							local is_dup = false
+							for _, c in ipairs(candidates) do
+								if c.start == s_col and c.finish == e_col - 1 then
+									is_dup = true
+									break
+								end
+							end
+							if not is_dup then
+								table.insert(candidates, { ident = text, start = s_col, finish = e_col - 1 })
+							end
+						end
+					end
+
+					for child in node:iter_children() do
+						traverse(child)
+					end
+				end
+				traverse(line_node)
+				if #candidates > 0 then
+					used_ts = true
+				end
+			end
+		end
 	end
 
-	local candidates = {}
-	for s, ident in line:gmatch("()([%a_][%w_]*)") do
-		local start = s - 1
-		local finish = start + #ident - 1
-		if not should_ignore(ident) then
-			table.insert(candidates, { ident = ident, start = start, finish = finish })
+	if not used_ts then
+		local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1]
+		if not line or line == "" then
+			return nil
+		end
+		for s, ident in line:gmatch("()([%a_][%w_]*)") do
+			local start = s - 1
+			local finish = start + #ident - 1
+			if not should_ignore(ident) then
+				table.insert(candidates, { ident = ident, start = start, finish = finish })
+			end
 		end
 	end
 
@@ -127,10 +194,36 @@ local function select_symbol_in_line(line, col)
 		end
 	end
 
+	local closest_cand = nil
+	local min_dist = math.huge
+
+	for _, cand in ipairs(candidates) do
+		local dist
+		if col < cand.start then
+			dist = cand.start - col
+		else
+			dist = col - cand.finish
+		end
+
+		if dist < min_dist then
+			min_dist = dist
+			closest_cand = cand
+		end
+	end
+
+	if closest_cand then
+		return closest_cand.ident, closest_cand.start
+	end
+
 	local last = candidates[#candidates]
 	return last.ident, last.start
 end
 
+---Constructs LSP position parameters
+---@param bufnr number The buffer number
+---@param line number The 0-based line number
+---@param col number The 0-based column number
+---@return table The LSP textDocumentPositionParams
 local function position_params(bufnr, line, col)
 	return {
 		textDocument = { uri = vim.uri_from_bufnr(bufnr) },
@@ -138,6 +231,10 @@ local function position_params(bufnr, line, col)
 	}
 end
 
+---Checks if a type definition is already open in the stack
+---@param src_buf number The source buffer number
+---@param src_start_line number The start line of the definition
+---@return boolean True if the definition is already open
 local function is_duplicate(src_buf, src_start_line)
 	for _, frame in ipairs(state.stack) do
 		if frame.src_buf == src_buf and frame.src_start_line == src_start_line then
@@ -147,7 +244,13 @@ local function is_duplicate(src_buf, src_start_line)
 	return false
 end
 
-local function open_from_location(src_buf, line, col, parent_win)
+---Opens the type definition from the given location in a floating window
+---@param src_buf number The source buffer number
+---@param line number The 0-based line number
+---@param col number The 0-based column number
+---@param parent_win number|nil The parent window handle
+---@param symbol_name string|nil The name of the symbol being opened
+local function open_from_location(src_buf, line, col, parent_win, symbol_name)
 	local params = position_params(src_buf, line, col)
 
 	resolver.resolve(src_buf, params, function(result)
@@ -161,7 +264,7 @@ local function open_from_location(src_buf, line, col, parent_win)
 			return
 		end
 
-		local extracted = extractor.extract(result.bufnr, result.start_line, result.end_line)
+		local extracted = extractor.extract(result.bufnr, result.start_line, config.show_docs)
 		if not extracted or #extracted.lines == 0 then
 			notify("Go type hover: unable to extract type definition")
 			return
@@ -172,7 +275,6 @@ local function open_from_location(src_buf, line, col, parent_win)
 		local win_width = math.floor(float_opts.width or float_opts.max_width or 80)
 		float_opts.width = win_width
 
-		-- need to calculate height based on content and wrapping (usually comments in the struct)
 		local content_h = 0
 		for _, l in ipairs(extracted.lines) do
 			local text_w = vim.fn.strdisplaywidth(l)
@@ -197,6 +299,46 @@ local function open_from_location(src_buf, line, col, parent_win)
 		float_opts.height = math.floor(math.max(1, final_height))
 
 		float_opts.relative = "editor"
+
+		local title_parts = {}
+		for _, frame in ipairs(state.stack) do
+			if frame.symbol then
+				table.insert(title_parts, frame.symbol)
+			end
+		end
+
+		local current_symbol = symbol_name
+		if not current_symbol then
+			for _, l in ipairs(extracted.lines) do
+				if not l:match("^%s*//") then
+					local name = l:match("type%s+([%w_]+)")
+					if name then
+						current_symbol = name
+					end
+					break
+				end
+			end
+		end
+
+		if current_symbol then
+			table.insert(title_parts, current_symbol)
+		end
+
+		local title = " " .. table.concat(title_parts, " > ") .. " "
+		if #title_parts == 0 then
+			title = " Type Definition "
+		end
+
+		local footer = " l Enter | h Back | e Jump | q Close "
+
+		float_opts.title = title
+		float_opts.footer = footer
+
+		for _, frame in ipairs(state.stack) do
+			if frame.win and vim.api.nvim_win_is_valid(frame.win) then
+				vim.api.nvim_win_set_config(frame.win, { title = "", footer = "" })
+			end
+		end
 
 		if not parent_win then
 			local win_pos = vim.api.nvim_win_get_position(0)
@@ -240,12 +382,7 @@ local function open_from_location(src_buf, line, col, parent_win)
 				local row = cursor[1]
 				local col = cursor[2]
 
-				local lines = vim.api.nvim_buf_get_lines(frame.buf, row - 1, row, false)
-				if not lines or #lines == 0 then
-					return
-				end
-
-				local symbol, ident_col = select_symbol_in_line(lines[1], col)
+				local symbol, ident_col = find_symbol(frame.buf, row - 1, col)
 				if not symbol then
 					return
 				end
@@ -253,13 +390,20 @@ local function open_from_location(src_buf, line, col, parent_win)
 				local src_line = frame.src_start_line + (row - 1)
 				local src_col = ident_col
 
-				open_from_location(frame.src_buf, src_line, src_col, cur_win)
+				open_from_location(frame.src_buf, src_line, src_col, cur_win, symbol)
 			end,
 			back = function()
 				state.close_top()
 			end,
 			close_all = function()
 				state.close_all()
+			end,
+			jump = function()
+				state.close_all()
+				if vim.api.nvim_buf_is_valid(result.bufnr) then
+					vim.api.nvim_set_current_buf(result.bufnr)
+					vim.api.nvim_win_set_cursor(0, { result.start_line + 1, 0 })
+				end
 			end,
 		}
 
@@ -275,12 +419,15 @@ local function open_from_location(src_buf, line, col, parent_win)
 			buf = buf,
 			src_buf = result.bufnr,
 			src_start_line = extracted.start_line,
-			symbol = result.symbol,
+			symbol = current_symbol,
+			title = title,
+			footer = footer,
 		}
 		state.push(frame)
 	end)
 end
 
+---Triggers the type hover functionality for the symbol under the cursor
 function M.hover()
 	local bufnr = vim.api.nvim_get_current_buf()
 	if vim.bo[bufnr].filetype ~= "go" then
@@ -295,9 +442,12 @@ function M.hover()
 
 	state.close_all()
 	local cursor = vim.api.nvim_win_get_cursor(0)
-	open_from_location(bufnr, cursor[1] - 1, cursor[2], nil)
+	local symbol, _ = find_symbol(bufnr, cursor[1] - 1, cursor[2])
+	open_from_location(bufnr, cursor[1] - 1, cursor[2], nil, symbol)
 end
 
+---Sets up the plugin with the given options
+---@param opts table|nil Configuration options
 function M.setup(opts)
 	config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts or {})
 

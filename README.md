@@ -26,6 +26,7 @@ Navigation within floats uses vim keybindings:
 - `l` / `Enter` enter the nested type under cursor
 - `h` go back (close the top float)
 - `q` / `Esc` close all floats
+- `e` / `gd` jump to the type definition in the main window
 - `j` / `k` move within the float
 
 ## Configuration
@@ -42,6 +43,7 @@ require("go_type_hover").setup({
   },
   offset = { row = 1, col = 2 },
   ignored = { "context" },
+  show_docs = true,
 })
 ```
 
