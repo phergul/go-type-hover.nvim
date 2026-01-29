@@ -26,10 +26,10 @@ function M.open(lines, opts, actions)
 		style = "minimal",
 		focusable = opts.focusable ~= false,
 		zindex = 50,
-		title = opts.title,
-		title_pos = opts.title and "center" or nil,
-		footer = opts.footer,
-		footer_pos = opts.footer and "center" or nil,
+		title = opts.show_header and opts.title or nil,
+		title_pos = opts.show_header and opts.title and "center" or nil,
+		footer = opts.show_footer and opts.footer or nil,
+		footer_pos = opts.show_footer and opts.footer and "center" or nil,
 	}
 
 	local win = vim.api.nvim_open_win(buf, true, win_opts)

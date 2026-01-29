@@ -22,6 +22,9 @@ local default_config = {
 		max_width = 80,
 		-- maximum height of the floating window
 		max_height = nil,
+		-- whether to show header and footer
+		show_header = true,
+		show_footer = true,
 	},
 
 	-- offset from the anchor position
