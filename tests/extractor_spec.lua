@@ -81,4 +81,17 @@ describe("extractor", function()
 		assert.is_not_nil(res)
 		assert.are.same("type SimpleStruct struct {", res.lines[1])
 	end)
+
+	it("returns nil when parser is unavailable", function()
+		local original_get_parser = vim.treesitter.get_parser
+		vim.treesitter.get_parser = function()
+			error("parser unavailable")
+		end
+
+		local ok, res = pcall(extractor.extract, bufnr, 3)
+		vim.treesitter.get_parser = original_get_parser
+
+		assert.is_true(ok)
+		assert.is_nil(res)
+	end)
 end)

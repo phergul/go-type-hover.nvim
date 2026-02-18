@@ -118,7 +118,7 @@ local function should_ignore(symbol)
 	return false
 end
 
----Finds a symbol in the given line near the specified column
+---Finds a symbol in the given line for the specified column
 ---@param bufnr number The buffer number
 ---@param row number The 0-based row index
 ---@param col number The 0-based column index
@@ -145,7 +145,7 @@ local function find_symbol(bufnr, row, col)
 					end
 
 					local type = node:type()
-					if type == "type_identifier" or type == "package_identifier" then
+					if type == "type_identifier" then
 						local text = vim.treesitter.get_node_text(node, bufnr)
 						if not should_ignore(text) then
 							local is_dup = false
@@ -191,35 +191,21 @@ local function find_symbol(bufnr, row, col)
 		return nil
 	end
 
+	table.sort(candidates, function(a, b)
+		if a.start == b.start then
+			return a.finish < b.finish
+		end
+		return a.start < b.start
+	end)
+
 	for _, cand in ipairs(candidates) do
 		if col >= cand.start and col <= cand.finish then
 			return cand.ident, cand.start
 		end
 	end
 
-	local closest_cand = nil
-	local min_dist = math.huge
-
-	for _, cand in ipairs(candidates) do
-		local dist
-		if col < cand.start then
-			dist = cand.start - col
-		else
-			dist = col - cand.finish
-		end
-
-		if dist < min_dist then
-			min_dist = dist
-			closest_cand = cand
-		end
-	end
-
-	if closest_cand then
-		return closest_cand.ident, closest_cand.start
-	end
-
-	local last = candidates[#candidates]
-	return last.ident, last.start
+	local first = candidates[1]
+	return first.ident, first.start
 end
 
 ---Constructs LSP position parameters
@@ -301,8 +287,6 @@ local function open_from_location(src_buf, line, col, parent_win, symbol_name)
 		local final_height = math.min(content_h, limit_h)
 		float_opts.height = math.floor(math.max(1, final_height))
 
-		float_opts.relative = "editor"
-
 		local title_parts = {}
 		for _, frame in ipairs(state.stack) do
 			if frame.symbol then
@@ -343,20 +327,28 @@ local function open_from_location(src_buf, line, col, parent_win, symbol_name)
 			end
 		end
 
+		local off_r = config.offset.row or 1
+		local off_c = config.offset.col or 2
+
 		if not parent_win then
-			local win_pos = vim.api.nvim_win_get_position(0)
-			local cursor = vim.api.nvim_win_get_cursor(0)
-			float_opts.row = win_pos[1] + cursor[1]
-			float_opts.col = win_pos[2] + cursor[2]
+			float_opts.relative = "editor"
+			if config.anchor == "editor" then
+				float_opts.row = off_r
+				float_opts.col = off_c
+			else
+				local win_pos = vim.api.nvim_win_get_position(0)
+				local cursor = vim.api.nvim_win_get_cursor(0)
+				float_opts.row = win_pos[1] + cursor[1] + off_r - 1
+				float_opts.col = win_pos[2] + cursor[2] + off_c
+			end
 		else
 			if vim.api.nvim_win_is_valid(parent_win) then
 				local parent_pos = vim.api.nvim_win_get_position(parent_win)
-				local off_r = config.offset.row or 1
-				local off_c = config.offset.col or 2
-
+				float_opts.relative = "editor"
 				float_opts.row = parent_pos[1] + off_r
 				float_opts.col = parent_pos[2] + off_c
 			else
+				float_opts.relative = "editor"
 				float_opts.row = 1
 				float_opts.col = 1
 			end
@@ -445,8 +437,9 @@ function M.hover()
 
 	state.close_all()
 	local cursor = vim.api.nvim_win_get_cursor(0)
-	local symbol, _ = find_symbol(bufnr, cursor[1] - 1, cursor[2])
-	open_from_location(bufnr, cursor[1] - 1, cursor[2], nil, symbol)
+	local symbol, ident_col = find_symbol(bufnr, cursor[1] - 1, cursor[2])
+	local request_col = ident_col or cursor[2]
+	open_from_location(bufnr, cursor[1] - 1, request_col, nil, symbol)
 end
 
 ---Sets up the plugin with the given options

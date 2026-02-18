@@ -49,32 +49,71 @@ end
 ---@param method string The LSP method name
 ---@param callback function The callback function
 local function resolve_method(bufnr, params, method, callback)
-	local clients = vim.lsp.get_clients({ bufnr = bufnr })
-	local pending = #clients
+	local pending_by_client = {}
 	local done = false
+	local initialized = false
+	local queued = {}
 
-	if pending == 0 then
-		callback(nil)
-		return
+	local function finish(value)
+		if done then
+			return
+		end
+		done = true
+		callback(value)
 	end
 
-	vim.lsp.buf_request(bufnr, method, params, function(_, result)
+	local function handle_response(result, ctx)
 		if done then
 			return
 		end
 
+		local client_id = ctx and ctx.client_id
+		if client_id and pending_by_client[client_id] then
+			pending_by_client[client_id] = nil
+		elseif not client_id then
+			local first = next(pending_by_client)
+			if first then
+				pending_by_client[first] = nil
+			end
+		end
+
 		local location = first_location(result)
 		if location then
-			done = true
-			callback(location)
+			finish(location)
 			return
 		end
 
-		pending = pending - 1
+		local pending = vim.tbl_count(pending_by_client)
 		if pending <= 0 and not done then
-			callback(nil)
+			finish(nil)
 		end
+	end
+
+	local request_ids = vim.lsp.buf_request(bufnr, method, params, function(_, result, ctx)
+		if not initialized then
+			table.insert(queued, { result = result, ctx = ctx })
+			return
+		end
+		handle_response(result, ctx)
 	end)
+
+	for client_id, _ in pairs(request_ids or {}) do
+		pending_by_client[client_id] = true
+	end
+
+	initialized = true
+
+	if vim.tbl_count(pending_by_client) == 0 then
+		finish(nil)
+		return
+	end
+
+	for _, item in ipairs(queued) do
+		handle_response(item.result, item.ctx)
+		if done then
+			return
+		end
+	end
 end
 
 ---Resolves the type definition for the given parameters using LSP

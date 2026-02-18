@@ -20,12 +20,19 @@ end
 ---@param include_docs boolean|nil Whether to include preceding documentation comments
 ---@return table|nil The extracted lines and start line, or nil if failed
 function M.extract(bufnr, start_line, include_docs)
-	local parser = vim.treesitter.get_parser(bufnr, "go")
-	if not parser then
+	local parser_ok, parser = pcall(vim.treesitter.get_parser, bufnr, "go")
+	if not parser_ok or not parser then
 		return nil
 	end
 
-	local tree = parser:parse()[1]
+	local parse_ok, parsed = pcall(function()
+		return parser:parse()
+	end)
+	if not parse_ok or not parsed then
+		return nil
+	end
+
+	local tree = parsed[1]
 	if not tree then
 		return nil
 	end
