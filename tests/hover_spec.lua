@@ -2,14 +2,23 @@ describe("hover symbol selection", function()
 	local bufnr
 	local line
 	local original_get_clients
+	local state = require("go_type_hover.state")
 
-	local function load_with_resolver(resolver_mock)
-		local original_resolver = package.loaded["go_type_hover.resolver"]
-		package.loaded["go_type_hover.resolver"] = resolver_mock
+	local function load_with_modules(mocks)
+		local original_modules = {}
+		for module_name, module_impl in pairs(mocks) do
+			original_modules[module_name] = package.loaded[module_name]
+			package.loaded[module_name] = module_impl
+		end
+
 		package.loaded["go_type_hover"] = nil
 		local mod = require("go_type_hover")
 		package.loaded["go_type_hover"] = nil
-		package.loaded["go_type_hover.resolver"] = original_resolver
+
+		for module_name, old_module in pairs(original_modules) do
+			package.loaded[module_name] = old_module
+		end
+
 		return mod
 	end
 
@@ -24,6 +33,7 @@ describe("hover symbol selection", function()
 		vim.lsp.get_clients = function(_)
 			return { { id = 1 } }
 		end
+		state.close_all()
 	end)
 
 	after_each(function()
@@ -31,6 +41,7 @@ describe("hover symbol selection", function()
 		if original_get_clients then
 			vim.lsp.get_clients = original_get_clients
 		end
+		state.close_all()
 		if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
 			vim.api.nvim_buf_delete(bufnr, { force = true })
 		end
@@ -38,11 +49,13 @@ describe("hover symbol selection", function()
 
 	it("uses first custom type when cursor is on line whitespace", function()
 		local captured
-		local hover = load_with_resolver({
-			resolve = function(_, params, cb)
-				captured = params
-				cb(nil)
-			end,
+		local hover = load_with_modules({
+			["go_type_hover.resolver"] = {
+				resolve = function(_, params, cb)
+					captured = params
+					cb(nil)
+				end,
+			},
 		})
 		hover.setup({ keymap = "" })
 
@@ -56,11 +69,13 @@ describe("hover symbol selection", function()
 
 	it("requires cursor on second custom type to resolve second type", function()
 		local captured
-		local hover = load_with_resolver({
-			resolve = function(_, params, cb)
-				captured = params
-				cb(nil)
-			end,
+		local hover = load_with_modules({
+			["go_type_hover.resolver"] = {
+				resolve = function(_, params, cb)
+					captured = params
+					cb(nil)
+				end,
+			},
 		})
 		hover.setup({ keymap = "" })
 
@@ -74,5 +89,34 @@ describe("hover symbol selection", function()
 		vim.api.nvim_win_set_cursor(0, { 1, type_two_col })
 		hover.hover()
 		assert.are.same(type_two_col, captured.position.character)
+	end)
+
+	it("does not keep footer metadata when show_footer is false", function()
+		local hover = load_with_modules({
+			["go_type_hover.resolver"] = {
+				resolve = function(_, _, cb)
+					cb({ bufnr = bufnr, start_line = 0 })
+				end,
+			},
+			["go_type_hover.extractor"] = {
+				extract = function()
+					return { lines = { "type TypeOne struct {}" }, start_line = 0 }
+				end,
+			},
+			["go_type_hover.float"] = {
+				open = function()
+					return bufnr, -1
+				end,
+			},
+		})
+		hover.setup({
+			keymap = "",
+			float = { show_footer = false },
+		})
+
+		hover.hover()
+
+		assert.are.same(1, #state.stack)
+		assert.is_nil(state.stack[1].footer)
 	end)
 end)

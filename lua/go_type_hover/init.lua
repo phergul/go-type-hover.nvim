@@ -317,9 +317,13 @@ local function open_from_location(src_buf, line, col, parent_win, symbol_name)
 		end
 
 		local footer = " l Enter | h Back | e Jump | q Close "
+		local show_header = float_opts.show_header ~= false
+		local show_footer = float_opts.show_footer ~= false
 
-		float_opts.title = title
-		float_opts.footer = footer
+		float_opts.show_header = show_header
+		float_opts.show_footer = show_footer
+		float_opts.title = show_header and title or nil
+		float_opts.footer = show_footer and footer or nil
 
 		for _, frame in ipairs(state.stack) do
 			if frame.win and vim.api.nvim_win_is_valid(frame.win) then
@@ -415,8 +419,8 @@ local function open_from_location(src_buf, line, col, parent_win, symbol_name)
 			src_buf = result.bufnr,
 			src_start_line = extracted.start_line,
 			symbol = current_symbol,
-			title = title,
-			footer = footer,
+			title = float_opts.title,
+			footer = float_opts.footer,
 		}
 		state.push(frame)
 	end)
